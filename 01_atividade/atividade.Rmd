@@ -1,0 +1,105 @@
+---
+title: 'Atividade 01: Nossas Perguntas'
+author: "Caynan Sousa"
+date: "16/11/2016"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+
+alunosUFCG <- read.csv("~/Projects/UFCG/AD2/data_analysis_2/01_atividade/alunosUFCGAnon.csv")
+```
+
+## Sobre os dados
+
+Iremos analizar os dados do controle acadêmico da UFCG, nossos dados contemplam os períodos de 2002 a 2014 e todos os cursos da UFCG.
+
+Iremos importar esses dados para um `dataframe`, que irems chamar de alunosUFCG.
+
+```{r colnames}
+colnames(alunosUFCG)
+```
+
+Como podemos ver todos os dados que temos dos alunos é bem auto-explicativo, a parter, talvez dos seguintes campos:
+
+- **Cod_Evasao:** 0 se o aluno *não* evadiu ao fim do primeiro periodo e 1 se ele evadiu.
+- **Credito_Curso:** Total de créditos necessários para o aluno concluir o curso.
+- **Periodo_Ingresso:** período que o aluno entrou no curso.
+
+## Distribuição Notas por Curso
+
+```{r bestGradeByCourse}
+by_curso <- group_by(alunosUFCG, Cod_Curso)
+
+grade_by_curso <- summarise(by_curso,
+  name = first(Nome_Curso),
+  media_disciplina = mean(Media_Disciplina, na.rm = TRUE))
+
+# Disciplinas com Menor Média
+head(arrange(grade_by_curso, media_disciplina))
+# Disciplinas com Maior Média
+head(arrange(grade_by_curso, desc(media_disciplina)))
+```
+
+So posso pensar que talvez seja pelo fato de que os cursos de Medicina e Direito, sejam um dos mais concorridos na UFCG, portanto os alunos de tais cursos provavelmente tem uma melhor base dos conteudos do ensino médio além de provavelmente já estarem acostumados a estudar de forma regular e constante.
+
+E o curso de Física, é um dos cursos com maior evasão na UFCG, o que pode ser justificado por diversos motivos, desde uma falta de conhecimentos básicos por parte dos alunos, como uma fraca metologia de ensino por parte dos professores desse departamento.
+
+## Comparação Periodos do Curso de Ciências da Computação
+
+Vamos filtar nossos alunos, para termos apenas os alunos do curso de computação.
+
+Tendo em mãos os alunos de computação, podemos agrupar por disciplina e então calcular a média de cada disciplina e agrupar tais resultados por periodo; Assim obtemos um conjunto de dados que podemos ordenar baseado em notas de cada periodo.
+
+```{r bestGradesCC}
+alunosCC <- filter(alunosUFCG, Cod_Curso == 14102100)
+
+by_disciplina <- group_by(alunosCC, Cod_Disciplina)
+
+grade_by_disciplina <- summarise(by_disciplina,
+  name = first(Nome_Disciplina),
+  periodo = first(Periodo),
+  media_disciplina = mean(Media_Disciplina, na.rm = TRUE))
+
+by_periodo <- group_by(grade_by_disciplina, periodo)
+
+grade_by_periodo <- summarise(by_periodo,
+  media_periodo = mean(media_disciplina, na.rm = TRUE))
+
+head(arrange(grade_by_periodo, media_periodo))
+head(arrange(grade_by_periodo, desc(media_periodo)))
+```
+
+Algo interessante é observar que temos mais turmas da entrada no meio do ano entre as turmas com pior rendimento, e um número maior de turmas da entrada do inicio do ano entre as melhores turmas.
+
+## Correlacionando Mat. Discreta e Cálculo I
+
+Temos que agrupar nossos alunos que cursaram Matématica discreta e Cálculo I, e então podemos calcular a correlação entre a nota obtida em cada uma das disciplinas.
+
+Note que caso o aluno tenha cursado as disciplinas mais de uma vez, iremos considerar a mediana de tais notas no nosso calculo de correlação.
+
+```{r corMatDiscretaECalculoI}
+# Filtramos alunosCC para mostrar apenas alunos que cursaram Discreta
+alunosCC.disc <- filter(alunosCC, Cod_Disciplina == 1109113)
+alunosCC.disc <- select(alunosCC.disc, Matricula, Media_Disciplina)
+alunosCC.disc <- group_by(alunosCC.disc, Matricula)
+alunosCC.disc <- summarise(alunosCC.disc,
+  mediana_disc = median(Media_Disciplina, na.rm = TRUE))
+
+# Filtramos alunosCC para mostrar apenas alunos que cursaram Calculo I
+alunosCC.calc <- filter(alunosCC, Cod_Disciplina == 1109103)
+alunosCC.calc <- group_by(alunosCC.calc, Matricula)
+alunosCC.calc <- summarise(alunosCC.calc,
+  mediana_calc = median(Media_Disciplina, na.rm = TRUE))
+
+#Unimos os DataFrames
+alunosPair <- merge(alunosCC.disc, alunosCC.calc, by = "Matricula", all = FALSE)
+alunosPair <- na.omit(alunosPair)
+
+# Calculamos a correlação
+cor(alunosPair$mediana_calc, alunosPair$mediana_disc)
+```
+
+Temos então uma correlação fortemente positiva (+0.7).
