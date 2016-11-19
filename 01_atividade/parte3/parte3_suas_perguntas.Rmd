@@ -1,0 +1,110 @@
+---
+title: "Análise Cursos UFCG"
+author: "Caynan Sousa"
+date: "17/11/2016"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(ggplot2)
+
+alunosUFCG <- read.csv("~/Projects/UFCG/AD2/data_analysis_2/01_atividade/alunosUFCGAnon.csv")
+```
+
+## Nossos Dados
+
+Iremos analizar os dados do controle acadêmico da UFCG, nossos dados contemplam os períodos de 2002 a 2014 e todos os cursos da UFCG.
+
+Esses dados estão disponiveis em um `dataframe` chamado `alunosUFCG`. Podemos ver então que os atributos disponiveis, são:
+
+```{r colsAlunosUFCG}
+colnames(alunosUFCG)
+```
+
+Como podemos ver todos os dados que temos dos alunos é bem auto-explicativo, a parter, talvez dos seguintes campos:
+
+- **Cod_Evasao:** 0 se o aluno *não* evadiu ao fim do primeiro periodo e 1 se ele evadiu.
+- **Credito_Curso:** Total de créditos necessários para o aluno concluir o curso.
+- **Periodo_Ingresso:** período que o aluno entrou no curso.
+
+## Perguntas
+
+Separamos então algumas perguntas interessantes que podemos responder com ajuda desses dados, além de uma previsão inicial baseada totalmente em intuição, afim de podermos ver se os dados concordam com ~~minha~~ nossa intuição.
+
+1. Qual campus possui a maior quantidade de evasão? E a menor? 
+
+Eu imagino que os campus com menos concentração populacional como Cuité, Sumé e Pombal estejam entre os com maior evasão, e simetricamente os com maior concentração populacional, como Campina Grande, Cajazeiras e Patos estejam entre os com menor evasão.
+
+2. Qual disciplina possui a maior quantidade de alunos reprovados por falta?
+
+Eu imagino que provavelmente alguma disciplina do CCT, tais como as que são oferecidas pelos departamentos de matemática e/ou estatistica.
+
+3. Existe alguma ligação (correlação) entre ser admitido na universidade no segundo semestre e reprovações? 
+
+Eu imagino que sim e que seja uma correlação positiva, ou seja existem mais reprovações entre os alunos admitidos no segundo semestre do que entre os alunos admitidos no primeiro semestre.
+
+## Respondendo Nossas Perguntas
+
+**Qual campus possui a maior quantidade de evasão? E a menor?**
+
+Para responder essa pergunta, iremos contar a quantidade de evasão em cada campus, e afim de obtermos um resultado normalizado para a quantidade de alunos em cada campus, iremos dividir pelo número de alunos em cada respectivo campus, assim obtendo uma porcentagem de alunos que evadiram a universidade.
+
+```{r evasao}
+alunosUFCG.evasao <- filter(alunosUFCG, Cod_Evasao == 1)
+
+evasaoUFCG <- alunosUFCG.evasao %>% filter(!is.na(Cod_Evasao)) %>% 
+  group_by(Campus) %>%
+  summarise(
+    Num_Alunos = n_distinct(Matricula), 
+    Num_Evasoes = n(),
+    Perc_Evasao = Num_Evasoes / Num_Alunos
+  ) 
+```
+
+Visualmente temos:
+
+```{r pressure, echo=FALSE}
+ggplot(data=evasaoUFCG, aes(x=Campus, y=Perc_Evasao)) +
+    geom_bar(colour="black", stat="identity") +
+    guides(fill=FALSE) +
+    scale_x_continuous(breaks=c(1,2,3,4,5,7,9))
+```
+
+Podemos então obrservar que os campus **4** e **7** são os com maior porcentagem de evasão dentre todos os campus. E que os campus **3** e **1** são os com menor porcentagem de evasão entre os campus observados.
+
+**Qual disciplina possui a maior quantidade de alunos reprovados por falta?**
+
+Para responder essa pergunta, iremos contar a quantidade de reprovações por falta para cada disciplina durante todo o periodo observado, e afim de obtermos um resultado normalizado para a quantidade de alunos matriculados em cada disciplina, iremos dividir pelo número de alunos matriculados cada respectiva disciplina, assim obtendo uma porcentagem dos alunos que foram reprovados por falta para cada disciplina.
+
+```{r reprovadoFalta}
+alunosUFCG.reprovado.falta <- filter(alunosUFCG, Situacao == "Reprovado por Falta")
+
+reprovados.falta <- alunosUFCG.reprovado.falta %>% filter(!is.na(Situacao)) %>% 
+  group_by(Cod_Disciplina) %>%
+  summarise(
+    Nome_Disciplina = first(Nome_Disciplina),
+    Departamento = first(Departamento),
+    Num_Reprovados_Falta = n()
+  ) 
+
+todos.alunos <- alunosUFCG %>% filter(!is.na(Situacao)) %>% 
+  group_by(Cod_Disciplina) %>%
+  summarise(
+    Num_Alunos = n()
+  ) %>%
+  arrange(desc(Num_Alunos))
+
+summary.reprovados <- merge(reprovados.falta,  todos.alunos, by="Cod_Disciplina") %>%
+  mutate(Perc_Reprovados = Num_Reprovados_Falta / Num_Alunos) %>%
+  # Removemos disciplinas onde todos os alunos que já a cursaram a perderam por falta,
+  # provavelmente são outliers.
+  filter(Num_Reprovados_Falta != Num_Alunos & Num_Alunos > 30) %>%
+  arrange(desc(Perc_Reprovados))
+
+head(summary.reprovados)
+```
+
+O resulto me foi um pouco inesperado, mesmo após reduzir os resultados para disciplinas com 30+ alunos matriculados, pricipalmente a disciplina na quinta posição, por ser uma disciplina do departamento de Antropologia e Sociologia, que não era um dos departamentos que previ que estaria entre o top 5.
+
