@@ -1,0 +1,115 @@
+---
+title: "Linear Regression"
+author: "Caynan Sousa"
+date: "11/30/2016"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(readr)
+library(dplyr)
+library(reshape2)
+```
+
+## Pré-Processamento
+
+Primeiro iremos carregar os dados que iremos analizar.
+
+```{r loadFile}
+graduados <- read_csv("graduados.csv",
+                      col_types = cols(matricula=col_character())) %>%
+  mutate(matricula = as.factor(matricula))
+head(graduados)
+```
+
+Podemos ver o formato dos nossos dados, e um breve resumo deles.
+
+```{r summaryGraduados}
+str(graduados)
+summary(graduados)
+View(graduados)
+graduados <- graduados %>% arrange(matricula)
+```
+
+## Formatando Dados
+
+Removeremos todos os NAs nas médias assim como as disciplinas cursadas mais de uma vez pelo menos aluno (reprovação), assim como iremos calcular o cra para cada matricula
+
+```{r cra}
+# we first clean the data to remove NAs
+graduados.clean <- graduados %>%
+  filter(!is.na(media))
+
+# Add CRA to dataset
+graduados.cra <- graduados.clean %>%
+  group_by(matricula) %>%
+  mutate(cra.contrib = media * creditos) %>%
+  summarise(cra = sum(cra.contrib) / sum(creditos))
+
+# Add 1st semester CRA
+disciplinas.1.semestre <- c(1109103, 1109035, 1307151, 1411167, 1411174,1411180)
+graduados.cra.1.semestre <- graduados.clean %>%
+  group_by(matricula) %>%
+  filter(codigo_disciplina %in% disciplinas.1.semestre) %>%
+  mutate(cra.contrib = media * creditos) %>%
+  summarise(cra.1.semestre = sum(cra.contrib) / sum(creditos))
+
+# Add 2nd semester CRA
+disciplinas.2.semestre <- c(1109053, 1109113, 1411168, 1411170, 1108089, 1411181)
+graduados.cra.2.semestre <- graduados.clean %>%
+  group_by(matricula) %>%
+  filter(codigo_disciplina %in% disciplinas.2.semestre) %>%
+  mutate(cra.contrib = media * creditos) %>%
+  summarise(cra.2.semestre = sum(cra.contrib) / sum(creditos))
+
+cra.primeiros.semestres <- merge(graduados.cra.1.semestre, graduados.cra.2.semestre)
+                       
+todos.cra <- merge(graduados.cra, cra.primeiros.semestres)
+View(todos.cra)
+head(todos.cra)
+```
+
+Formataremos nossos dados, para um formato que possamos mais facilmente analisar.
+
+```{r reshapeData}
+graduados.model.input <- graduados.clean %>%
+  group_by(matricula, disciplina) %>%
+  filter(media == max(media)) %>%
+  ungroup() %>%
+  select(matricula, disciplina, media) %>%
+  mutate(disciplina=as.factor(gsub(" ", ".", disciplina))) %>%
+  dcast(matricula ~ disciplina, median) %>%
+  merge(todos.cra)
+
+head(graduados.model.input)
+View(graduados.model.input)
+```
+
+Fazemos então o treinamento do nosso modelo de regressão linear múltipla:
+
+```{r regression}
+cra.geral = todos.cra$cra
+cra.1.sem = todos.cra$cra.1.semestre
+cra.2.sem = todos.cra$cra.2.semestre
+
+reg.cra <- lm(cra.geral ~ cra.1.sem + cra.2.sem)
+summary(reg.cra)
+
+predicao <- predict.lm(reg.cra, todos.cra)
+residuo <- cra.geral - predicao
+
+# Diagnostic Chart
+axisRange <- extendrange(c(cra.geral, predicao))
+plot(cra.geral, predicao)
+abline(0,1,col="blue",lty=2,lwd=2)
+
+# Residue Chart
+plot(predicao, residuo)
+abline(h=0,col="blue",lty=2,lwd=2)
+```
+
+Como podemos ver, ambas as variáveis independentes (CRA primeiro semestre e CRA segundo semestre) possuem baixissimos p-valores, o que indica uma baixa probabilidade das variáveis serem irrelevantes para a predição do CRA geral.
+
+Ainda podemos ver que nosso modelo consegue explicar aproximadamente 72% dos exemplos em nosso conjunto de dados. Sendo o CRA no segundo semestre o principal fator para determinar o desempenho do aluno no restante do curso.
+
