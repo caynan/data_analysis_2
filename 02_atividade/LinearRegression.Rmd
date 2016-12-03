@@ -113,3 +113,16 @@ Como podemos ver, ambas as variáveis independentes (CRA primeiro semestre e CRA
 
 Ainda podemos ver que nosso modelo consegue explicar aproximadamente 72% dos exemplos em nosso conjunto de dados. Sendo o CRA no segundo semestre o principal fator para determinar o desempenho do aluno no restante do curso.
 
+```{r meuCRA}
+meu.cra.1 <- 6.14
+meu.cra.2 <- 6.65
+real.cra <- 7.53
+my.predicted.cra <- predict.lm(reg.cra,
+           data.frame(cra.1.sem = meu.cra.1,
+                      cra.2.sem = meu.cra.2))
+
+my.cra.residuals <- real.cra - my.predicted.cra
+my.cra.residuals
+```
+
+Eu aparentemente sou um ponto fora da curva, o que é de se esperar tendo em vista que no inicio do curso eu tive dengue hemorragica, o que afetou fortemente meu rendimento nos primeiros semestres.
