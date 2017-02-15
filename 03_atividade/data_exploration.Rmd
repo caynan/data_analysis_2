@@ -1,0 +1,154 @@
+---
+title: "Entendendo os Dados"
+author: "Caynan Sousa"
+date: "2/13/2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Load Libraries
+library(reshape2)
+library(dplyr)
+library(ggplot2)
+library(gridExtra)
+
+# Load data and set it to `data`
+data.url <- "https://raw.githubusercontent.com/caynan/data_analysis_2/master/03_atividade/treino_classificacao.csv"
+data <- read.csv(data.url)
+```
+
+## Introdução
+
+Com base em alguns dados que temos sobre os alunos de computação da UFCG, queremos então poder treinar um classificador que seja capaz de responder a seguinte pergunta:
+*"Após um(a) aluno(a) ter terminado o primeiro período, ele(a) continuará no curso ou não?"*
+
+```{r clean}
+# rename columns
+colnames(data) <- c("student_id", "course_id", "course", "year", "term", "mean", "dropped")
+
+# reshape data
+# - only one entry per student_id
+# - reshape course mean into column
+
+# get only one entry per student
+unique.data <- data %>%
+  group_by(student_id) %>% select(student_id, dropped, year, term) %>% unique()
+
+# reshape courses into columns
+data.reshaped.by.course <- data %>%
+  group_by(student_id, course) %>%
+  ungroup() %>%
+  select(student_id, course, mean) %>%
+  mutate(course = as.factor(gsub(" ", ".", course))) %>%
+  dcast(student_id ~ course, mean)
+
+# merge the two DFs
+data <- merge(unique.data, data.reshaped.by.course)
+```
+
+## Perguntas
+
+Afim de melhor entender os nossos dados, iremos buscar responder algumas perguntas.
+
+### Em qual ano houve mais evasões?
+
+Primeiro vamos criar uma nova variavel `num_dropouts` que irá conter para cada ano em nosso conjunto de dados: o número de alunos matriculados, número de evasões e a proporção de evasões em relação ao número total de alunos.
+
+```{r more_dropouts}
+num_dropouts <- data %>%
+  group_by(year) %>%
+  summarise(num_students = n(),
+            num_dropouts = sum(dropped),
+            proportion = num_dropouts / num_students)
+```
+
+Podemos ver que o ano com o maior número de desistências foi o ano de 2011 com nove evasões.
+
+```{r num_dropouts_plot, echo=FALSE}
+# plot
+ggplot(num_dropouts, aes(year, num_dropouts)) +
+  geom_bar(stat = "identity", position = "dodge", fill="#56B4E9") +
+  geom_text(aes(label=sprintf("%d", num_dropouts)), size = 3) +
+  scale_x_continuous(breaks=seq(2000, 2015, 1)) +
+  guides(fill = F) +
+  ylab("Number of Dropouts") +
+  xlab("Year") +
+  coord_flip()
+```
+
+Esse número por si só não nós da uma informação confiavel, já que a quantidade de alunos em cada semestre não é o mesmo. Portanto afim de termos um valor mais confiável iremos ver também a proporção de evasões e o total de alunos para cada ano.
+
+```{r proportion_dropouts_plot, echo=FALSE}
+ggplot(num_dropouts, aes(year, proportion)) +
+  geom_bar(stat = "identity", position = "dodge", fill="#56B4E9") +
+  geom_text(aes(label=sprintf("%0.1f %%", num_dropouts)), size = 3) +
+  scale_x_continuous(breaks=seq(2000, 2015, 1)) +
+  ylab("Proportion of Dropouts") +
+  xlab("Year") +
+  coord_flip()
+```
+
+Conhecidentemente a proporção de evasão no ano de 2011 tambem foi o maior dentre os 15 anos observados.
+
+### Qual a distribuição das classes em nossos dados?
+
+Aproveitando de nossa tabela modificada com o número de alunos por ano e de evasões, podemos fazer um agrupamento afim de descobrirmos o total ao longo dos 15 anos de dados observados.
+```{r class_distribution, warning = FALSE, message=FALSE}
+total_dropouts <- num_dropouts %>%
+  ungroup() %>%
+  summarise(total_students = sum(num_students),
+            total_dropouts = sum(num_dropouts))
+
+total_dropouts.melt <- total_dropouts %>% 
+  melt(variable.name="data_class", value.name="total_count")
+```
+
+Podemos ver que a diferença entre o total de alunos e o número de alunos que desistiram é gritante, temos uma proporção de 25:1 entre alunos matriculados e evasões.
+
+```{r class_distribution_plot, echo=FALSE}
+ggplot(total_dropouts.melt, aes(data_class, total_count)) +
+  geom_bar(stat = "identity", position = "dodge", fill="#56B4E9") +
+  geom_text(aes(label=sprintf("%d", total_count)), size = 3) +
+  # scale_x_continuous(breaks=seq(2000, 2015, 1)) +
+  ylab("Number of Students") +
+  xlab("Data Classes")
+```
+
+
+### Há desbalanceamento das classes (isto é, uma classe tem muito mais instâncias que outra)?
+
+Sim, existe um desbalançeamento das classes, dentre 1351 alunos temos 53 que evadiram o curso no primeiro semestre e 1298 que continuaram no curso apos o primeiro periodo, o que podemos ver como uma proporcao de aproximadamente 1:25, ou seja em nossos dados para cada entrada onde o aluno evadiu temos aproximadamente 25 alunos que nao evadiram.
+
+A presença desbalanceamento de classes afeta fortemente a maioria dos algoritmos de classificação, ja que os mesmos tenderão a desconsiderar o peso da classe minoritaria (alunos que evadiram), criando um viés de classificação para a classe marjoritaria nos dados (alunos que não evadiram).
+
+## Computando Novos Dados
+
+Afim de obtermor melhores resultados iremos pre-computar algumas variaveis que poderão então ser utilizadas em algoritmos de classificação.
+
+Uma boa métrica para utilizarmos é o coeficiênte de rendimento acadêmico (CRA), e talvez saber em separado o CRA para disciplinas do DSC e do DME.
+
+```{r new_variables}
+all.courses <- c("Álgebra.Vetorial.e.Geometria.Analítica", "Cálculo.Diferencial.e.Integral.I","Introdução.à.Computação",
+             "Laboratório.de.Programação.I", "Leitura.e.Produção.de.Textos", "Programação.I")
+dme.courses <- c("Álgebra.Vetorial.e.Geometria.Analítica", "Cálculo.Diferencial.e.Integral.I")
+dsc.courses <- c("Cálculo.Diferencial.e.Integral.I","Introdução.à.Computação", "Laboratório.de.Programação.I", "Programação.I")
+
+# this only work because all courses has the same amount of credits
+data$cra <- rowSums(data[,all.courses], na.rm = TRUE) / length(all.courses)
+data$cra_dme <- rowSums(data[,dme.courses], na.rm = TRUE) / length(dme.courses)
+data$cra_dsc <- rowSums(data[,dsc.courses], na.rm = TRUE) / length(dsc.courses)
+```
+
+```{r new_variables_plot, fig.align='center', echo=FALSE, message=FALSE, warning=FALSE}
+cra.plot <- ggplot(data, aes(dropped, cra)) + geom_boxplot()
+cra.dme.plot <- ggplot(data, aes(dropped, cra_dme)) + geom_boxplot()
+cra.dsc.plot <- ggplot(data, aes(dropped, cra_dsc)) + geom_boxplot()
+
+grid.arrange(cra.plot, cra.dme.plot, cra.dsc.plot, ncol=3)
+```
+
+
+Podemos verificar que a diferença de CRA geral, CRA considerando apenas disciplinas do DME (Departamente de Matématica e Estatistica) e do DSC (Departamento de Sistemas e Computação) entre alunos que evadiram a universidade no primeiro semestre do curso é bastante aparente. O que é algo bom, já que os algoritmos classificadores terão menos alunos entre os limites entre grupos, quanto mais despares são as diferentes classes mais facil é treinar um modelo de classificação. 
+
