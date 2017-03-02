@@ -1,0 +1,236 @@
+---
+title: "predicting_evasion"
+author: "Caynan Sousa"
+date: "26/2/2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# For data manipulation and tidying
+library(dplyr)
+library(tidyr)
+library(Hmisc)
+library(reshape2)
+
+# For data visualizations
+library(ggplot2)
+library(highcharter)
+library(igraph)
+# library(networkD3)
+library(htmlwidgets)
+
+# For machine learning
+library(caret)
+library(ranger)
+library(e1071)
+```
+
+## Introduction
+
+
+### Importing Dataset
+
+```{r load_data}
+# Load data and set it to `data`
+data.url <- "https://raw.githubusercontent.com/caynan/data_analysis_2/master/03_atividade/treino_classificacao_v2.csv"
+data <- read.csv(data.url)
+
+# rename columns
+colnames(data) <- c("student_id", "course_id", "course_name", "year", "term", "mean", "evaded")
+```
+
+
+### Data Structure and Variables
+
+Great! Now that our data is imported, we can get a look at it. I'll start by looking at it's structure.
+
+```{r data_structure}
+str(data)
+```
+
+So as we expected we're working with a data frame of 7 variables and 7874 observations.
+
+Our 7 variables are:   
+- **student_id**: 
+- **course_id**:
+- **course_name**:
+- **year**:
+- **term**:
+- **mean**:
+- **evaded**: 
+
+I'm going to change the data type of the student_id, course_id, term and year columns. Apart from year, which is ordinal, all the other should be factors (nominal). 
+
+```{r change_datatypes}
+# change data types for student_id, course_id, evaded, year and term
+data$student_id <- as.factor(data$student_id)
+data$course_id <- as.factor(data$course_id)
+data$term <- as.factor(data$term)
+data$year <- as.ordered(data$year)
+```
+
+A few basic questions that we might have about our data is:
+
+How many years are we looking here?
+```{r how_many_years}
+levels(data$year)
+```
+
+Cool, so we're dealing with data since the year 2000 up to 2015.
+
+How many students data do we have in our data?
+```{r how_many_students}
+data %>% summarise(n_distinct(student_id))
+```
+only **1351** students were accepted into Computer Science in the past 15 years, wow!
+
+## Can we predict if a student will evade after the first semester?
+bla bla bla, reasons why this is important
+
+We can already see, that our data is unbalanced, we have may more students that who didn't evaded than ones that have. To be more precise, we have a **25:1** ratio of
+students who didn't evaded to studets that evaded. But don't worry we will deal with this in a bit, but first let's see how our prediction models work with this
+unbalanced data, so we can have a baseline to compare with.
+
+### Predicting...
+
+I'm going to use some simple machine learning models (logistic regression and decision trees) to see if I can predict if a student will evade or not after the first
+semester. Summarising, we're trying to predict if a student evaded or not (dependent variable)  and for that we're going to use 10 (+ 1 extra) independent variables:  
+ - Grade on Calculus I (aka: calculus)
+ - Grade on Vectorial Algebra (aka: vectorial)
+ - Grade on Intro to CS (aka: ICS)
+ - Grade on Programming I (aka: P1)
+ - Grade on Lab. of Programming I (aka: LP1)
+ - Grade on Reading and Producing Text (aka: RPT)
+ - General GPA
+ - Comp. Sci. GPA (taking in consideration only classes from the Systems and Computers Department)
+ - Math GPA (taking in consideration only classes from the Math and Statistics Department)
+ - Term (if they got accepted into the first or the second semester)
+
+But first, we need to transform our dataset to fit into a frame with the needed variables.
+
+```{r reshaping_data}
+# reshape data
+# - only one entry per student_id
+# - reshape course mean into column
+
+# get only one entry per student
+unique.data <- data %>%
+  group_by(student_id) %>% select(student_id, evaded, year, term) %>% unique()
+
+# reshape courses into columns
+data.reshaped.by.course <- data %>%
+  select(student_id, course_name, mean) %>%
+#  mutate(mean = ifelse(is.na(mean), 0, mean)) %>%
+  mutate(course_name = as.factor(gsub(" ", ".", course_name))) %>%
+  dcast(student_id ~ course_name, value.var = "mean")
+
+# merge the two DFs
+mlset <- merge(unique.data, data.reshaped.by.course)
+# set column names to smaller easier to type names, why you wonder, because I'm lazy ;p
+colnames(mlset) <- c("student_id", "evaded","year", "term", "vectorial", "calculus", "ICS", "LP1", "RPT", "P1")
+```
+
+
+As we can see, we have a lot of NA on the courses columns, which mean that those students don't have record for those courses. This phenomenon could be explained by a number of reasons, could be that the student coursed them elsewhere, or it could be that he failed by the number of absences.
+
+Since is a little bit tricky the reason on why a given student don't have records for a given class, we're going to solve that in two steps:  
+- First we need to keep track of how many missing records(NA) we have per student (row)
+- Second, let's introduce a simple algorithm to fill those columns, if the number of missing records is greater than 3 (half the number of mandatory classes), let's set the mean to zero (0.0), But if is less than or equal to 3 let's set the value to the mean of the respective course for all other students on that given year and term.
+
+```{r dealing_with_na}
+# count the number of missing records
+mlset$missing_records <- apply(is.na(mlset), 1, sum)
+
+# implement our algorithm for each one of the courses column
+mlset <- mlset %>%
+  group_by(year, term) %>%
+  mutate(calculus = ifelse(is.na(calculus), ifelse(missing_records > 3, 0, median(calculus, na.rm = TRUE)), calculus)) %>%
+  mutate(vectorial = ifelse(is.na(vectorial), ifelse(missing_records > 3, 0, median(vectorial, na.rm = TRUE)), vectorial)) %>%
+  mutate(ICS = ifelse(is.na(ICS), ifelse(missing_records > 3, 0, median(ICS, na.rm = TRUE)), ICS)) %>%
+  mutate(P1 = ifelse(is.na(P1), ifelse(missing_records > 3, 0, median(P1, na.rm = TRUE)), P1)) %>%
+  mutate(LP1 = ifelse(is.na(LP1), ifelse(missing_records > 3, 0, median(LP1, na.rm = TRUE)), LP1)) %>%
+  mutate(RPT = ifelse(is.na(RPT), ifelse(missing_records > 3, 0, median(RPT, na.rm = TRUE)), RPT))
+
+# We don't have any use for the year column, so let's drop it.
+# mlset$year <- NULL
+```
+
+Now that the dataframe is set up the way I want (a single row per student, and only the variables I'm interested in) and we also have dealt with all those NA, let's
+start to play with our ML algorithms.
+
+In order to predict the evasion, it will be nice to check the number of dropouts per year.
+
+```{r more_dropouts}
+num_dropouts <- mlset %>%
+  group_by(year) %>%
+  summarise(num_students = n(),
+            num_dropouts = sum(evaded),
+            proportion = num_dropouts / num_students)
+```
+
+We can plot this information to make it easier to see our distribution.
+
+```{r num_dropouts_plot, echo=FALSE}
+# plot
+ggplot(num_dropouts, aes(year, num_dropouts)) +
+  geom_bar(stat = "identity", position = "dodge", fill="#56B4E9") +
+  geom_text(aes(label=sprintf("%d", num_dropouts)), size = 3) +
+  scale_x_discrete(breaks=seq(2000, 2015, 1)) +
+  guides(fill = F) +
+  ylab("Number of Dropouts") +
+  xlab("Year") +
+  coord_flip()
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
