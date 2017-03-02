@@ -88,11 +88,7 @@ only **1351** students were accepted into Computer Science in the past 15 years,
 ## Can we predict if a student will evade after the first semester?
 bla bla bla, reasons why this is important
 
-We can already see, that our data is unbalanced, we have may more students that who didn't evaded than ones that have. To be more precise, we have a **25:1** ratio of
-students who didn't evaded to studets that evaded. But don't worry we will deal with this in a bit, but first let's see how our prediction models work with this
-unbalanced data, so we can have a baseline to compare with.
-
-### Predicting...
+### Feature Engineering
 
 I'm going to use some simple machine learning models (logistic regression and decision trees) to see if I can predict if a student will evade or not after the first
 semester. Summarising, we're trying to predict if a student evaded or not (dependent variable)  and for that we're going to use 10 (+ 1 extra) independent variables:  
@@ -131,7 +127,6 @@ mlset <- merge(unique.data, data.reshaped.by.course)
 colnames(mlset) <- c("student_id", "evaded","year", "term", "vectorial", "calculus", "ICS", "LP1", "RPT", "P1")
 ```
 
-
 As we can see, we have a lot of NA on the courses columns, which mean that those students don't have record for those courses. This phenomenon could be explained by a number of reasons, could be that the student coursed them elsewhere, or it could be that he failed by the number of absences.
 
 Since is a little bit tricky the reason on why a given student don't have records for a given class, we're going to solve that in two steps:  
@@ -153,41 +148,87 @@ mlset <- mlset %>%
   mutate(RPT = ifelse(is.na(RPT), ifelse(missing_records > 3, 0, median(RPT, na.rm = TRUE)), RPT))
 
 # We don't have any use for the year column, so let's drop it.
-# mlset$year <- NULL
+ mlset$year <- NULL
 ```
 
-Now that the dataframe is set up the way I want (a single row per student, and only the variables I'm interested in) and we also have dealt with all those NA, let's
-start to play with our ML algorithms.
+### Is our Data Unbalanced?
 
-In order to predict the evasion, it will be nice to check the number of dropouts per year.
+Let's take a look if our data is unbalanced, have way more students in one category than on another (way more students who didn't evaded than students who evaded).
 
 ```{r more_dropouts}
 num_dropouts <- mlset %>%
-  group_by(year) %>%
   summarise(num_students = n(),
-            num_dropouts = sum(evaded),
-            proportion = num_dropouts / num_students)
+            num_dropouts = sum(evaded)) %>%
+  ungroup() %>%
+  summarise(total_students = sum(num_students),
+            total_dropouts = sum(num_dropouts))
+
+total_dropouts.melt <- total_dropouts %>% 
+  melt(variable.name="data_class", value.name="total_count")
 ```
 
 We can plot this information to make it easier to see our distribution.
 
 ```{r num_dropouts_plot, echo=FALSE}
-# plot
-ggplot(num_dropouts, aes(year, num_dropouts)) +
+ggplot(total_dropouts.melt, aes(data_class, total_count)) +
   geom_bar(stat = "identity", position = "dodge", fill="#56B4E9") +
-  geom_text(aes(label=sprintf("%d", num_dropouts)), size = 3) +
-  scale_x_discrete(breaks=seq(2000, 2015, 1)) +
-  guides(fill = F) +
-  ylab("Number of Dropouts") +
-  xlab("Year") +
-  coord_flip()
+  geom_text(aes(label=sprintf("%d", total_count)), size = 3) +
+  # scale_x_continuous(breaks=seq(2000, 2015, 1)) +
+  ylab("Number of Students") +
+  xlab("Data Classes")
+```
+
+As we can see our data is unbalanced, we have way more students that who didn't evaded than ones that have. To be more precise, we have that only ~9.32% of the data is of students that evaded.
+But don't worry we will deal with this in a bit, but first let's see how our prediction models work with this unbalanced data, so we can have a baseline to compare with.
+
+
+### Modeling
+
+Now that the dataframe is set up the way I want (a single row per student and only the variables I'm interested in), I'm going to randomize the dataset and extract a test set.
+
+```{r create_testing_set}
+# Set a random seed
+set.seed(42)
+
+# Shuffle rows of the data set
+n <- nrow(mlset)
+shuffled <- mlset[sample(n), ]
+
+# Perform 80/20 split (80% to training set, 30% to test set)
+train_indices <- 1:round(0.8 * n)
+train <- shuffled[train_indices, ]
+
+test_indices <- (round(0.8 * n) + 1):n
+test <- shuffled[test_indices, ]
 ```
 
 
+#### Fitting a baseline model
+probably something along the line of predicting that the student will not evade (which is good because of the unbalance)
 
 
+```{r fitting_model}
+myControl <- trainControl(method = "cv", number = 10)
 
+reg_model <- train(as.factor(evaded) ~ term + vectorial + calculus + ICS + LP1 + RPT + P1 + missing_records,
+                   data = train, tuneLength = 3, method = "glm", family = "binomial", trControl = myControl, na.action = na.omit)
 
+predict_output <- predict(reg_model, newdata = test)
+confusionMatrix(predict_output, test$evaded)
+```
+
+model.reg.cc <- train(evadiu ~ cra + num_NA + status + num_finais + C1 + AV + 
+                      IC + LP1 + LPT + P1 + cra_cc,
+                       data=treino,
+                       method="glm",
+                       family="binomial",
+                       na.action = na.omit)
+
+pred.reg.cc <- predict(model.reg.cc, newdata=teste)
+treino.pred.reg.cc <- predict(model.reg.cc, newdata=treino)
+
+acc.reg.cc <- confusionMatrix(pred.reg.cc, teste$evadiu)
+acc.reg.cc
 
 
 
