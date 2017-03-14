@@ -1,0 +1,436 @@
+---
+title: "Kaggle: Submission Brief"
+author: "Caynan Sousa"
+date: "3/12/2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# Packages
+# For using multicores
+library(doMC)
+registerDoMC(cores = 5)
+
+# For data manipulation and tidying
+library(dplyr)
+library(tidyr)
+library(Hmisc)
+library(reshape2)
+
+# For data visualizations
+library(ggplot2)
+library(highcharter)
+library(igraph)
+library(knitr)
+library(htmlwidgets)
+library(gridExtra)
+
+# For machine learning
+library(caret)
+library(glmnet)
+library(pROC)
+library(C50)
+library(mlbench)
+library(ranger)
+library(e1071)
+```
+
+
+## Loading Data & Data Shapping
+
+Let's load our data.
+
+```{r load_data}
+# Load data and set it to `data`
+train <- read.csv("~/Projects/UFCG/16_2/AD2/data_analysis_2/03_atividade/kaggle/train.csv") 
+test_kaggle <- read.csv("~/Projects/UFCG/16_2/AD2/data_analysis_2/03_atividade/kaggle/test.csv") 
+
+# Change Column Name
+colnames(train) <- c("student_id", "course_id", "course_name", "year", "term", "mean", "evaded")
+colnames(test_kaggle) <- c("student_id", "course_id", "course_name", "year", "term", "mean")
+
+# change data types for student_id, course_id, evaded, year and term
+train$evaded <- as.factor(make.names(train$evaded))
+train$student_id <- as.factor(train$student_id)
+train$course_id <- as.factor(train$course_id)
+train$term <- as.factor(train$term)
+train$year <- as.ordered(train$year)
+
+# We must do the same for our test_kaggle data
+test_kaggle$student_id <- as.factor(test_kaggle$student_id)
+test_kaggle$course_id <- as.factor(test_kaggle$course_id)
+test_kaggle$term <- as.factor(test_kaggle$term)
+```
+
+### Feature Engineering
+
+As we did in our previous labs, let's do some feature engineering by adding the GPA and making one row per student.
+
+```{r reshaping_train_data}
+# reshape data
+# - only one entry per student_id
+# - reshape course mean into column
+
+# get only one entry per student
+unique.train <- train %>%
+  group_by(student_id) %>% select(student_id, evaded, year, term) %>% unique()
+
+# reshape courses into columns
+train.reshaped.by.course <- train %>%
+  select(student_id, course_name, mean) %>%
+  mutate(course_name = as.factor(gsub(" ", ".", course_name))) %>%
+  dcast(student_id ~ course_name, value.var = "mean")
+  
+# merge the two DFs
+trainset <- merge(unique.train, train.reshaped.by.course)
+# set column names to smaller easier to type names, why you wonder, because I'm lazy ;p
+colnames(trainset) <- c("student_id", "evaded","year", "term", "vectorial", "calculus", "ICS", "LP1", "RPT", "P1")
+```
+
+
+```{r reshaping_test_data}
+# reshape data
+# - only one entry per student_id
+# - reshape course mean into column
+
+# get only one entry per student
+unique.test.kaggle <- test_kaggle %>%
+  group_by(student_id) %>% select(student_id, year, term) %>% unique()
+
+# reshape courses into columns
+kaggle.test.reshaped.by.course <- test_kaggle %>%
+  select(student_id, course_name, mean) %>%
+  mutate(course_name = as.factor(gsub(" ", ".", course_name))) %>%
+  dcast(student_id ~ course_name, value.var = "mean")
+  
+# merge the two DFs
+testset <- merge(unique.test.kaggle, kaggle.test.reshaped.by.course)
+# set column names to smaller easier to type names, why you wonder, because I'm lazy ;p
+colnames(testset) <- c("student_id","year", "term", "vectorial", "calculus", "ICS", "LP1", "RPT", "P1")
+```
+
+
+### Dealing with NAs
+
+Using our heuristic to handle NAs. We're counting the number of missing records, if the student have less than 3 missing records we use the median of their semester grade; If not (count > 3) we complete with 0.0.
+
+```{r train_dealing_with_na}
+# count the number of missing records
+trainset$missing_records <- apply(is.na(trainset), 1, sum)
+
+# implement our algorithm for each one of the courses column
+trainset <- trainset %>%
+  group_by(year, term) %>%
+  mutate(calculus = ifelse(is.na(calculus), ifelse(missing_records > 3, 0, median(calculus, na.rm = TRUE)), calculus)) %>%
+  mutate(vectorial = ifelse(is.na(vectorial), ifelse(missing_records > 3, 0, median(vectorial, na.rm = TRUE)), vectorial)) %>%
+  mutate(ICS = ifelse(is.na(ICS), ifelse(missing_records > 3, 0, median(ICS, na.rm = TRUE)), ICS)) %>%
+  mutate(P1 = ifelse(is.na(P1), ifelse(missing_records > 3, 0, median(P1, na.rm = TRUE)), P1)) %>%
+  mutate(LP1 = ifelse(is.na(LP1), ifelse(missing_records > 3, 0, median(LP1, na.rm = TRUE)), LP1)) %>%
+  mutate(RPT = ifelse(is.na(RPT), ifelse(missing_records > 3, 0, median(RPT, na.rm = TRUE)), RPT))
+```
+
+```{r train_calculated_variables}
+# General GPA
+gen.gpa <- trainset %>% rowwise() %>%
+  mutate(gen_gpa = sum(vectorial, calculus, ICS, LP1, RPT, P1) / 6)
+# CompSci GPA
+compsci.gpa <- trainset %>% rowwise() %>%
+  mutate(compsci_gpa = sum(ICS, LP1, P1) / 3)
+# Math GPA
+math.gpa <- trainset %>% rowwise() %>%
+  mutate(math_gpa = sum(vectorial, calculus) / 2)
+
+trainset$general_gpa <- gen.gpa$gen_gpa
+trainset$compsci_gpa <- compsci.gpa$compsci_gpa
+trainset$math_gpa <- math.gpa$math_gpa
+```
+
+Doing the same for the test data
+
+```{r test_dealing_with_na}
+# count the number of missing records
+testset$missing_records <- apply(is.na(testset), 1, sum)
+
+# implement our algorithm for each one of the courses column
+testset <- testset %>%
+  group_by(year, term) %>%
+  mutate(calculus = ifelse(is.na(calculus), ifelse(missing_records > 3, 0, median(calculus, na.rm = TRUE)), calculus)) %>%
+  mutate(vectorial = ifelse(is.na(vectorial), ifelse(missing_records > 3, 0, median(vectorial, na.rm = TRUE)), vectorial)) %>%
+  mutate(ICS = ifelse(is.na(ICS), ifelse(missing_records > 3, 0, median(ICS, na.rm = TRUE)), ICS)) %>%
+  mutate(P1 = ifelse(is.na(P1), ifelse(missing_records > 3, 0, median(P1, na.rm = TRUE)), P1)) %>%
+  mutate(LP1 = ifelse(is.na(LP1), ifelse(missing_records > 3, 0, median(LP1, na.rm = TRUE)), LP1)) %>%
+  mutate(RPT = ifelse(is.na(RPT), ifelse(missing_records > 3, 0, median(RPT, na.rm = TRUE)), RPT))
+```
+
+```{r test_calculated_variables}
+# General GPA
+gen.gpa <- testset %>% rowwise() %>%
+  mutate(gen_gpa = sum(vectorial, calculus, ICS, LP1, RPT, P1) / 6)
+# CompSci GPA
+compsci.gpa <- testset %>% rowwise() %>%
+  mutate(compsci_gpa = sum(ICS, LP1, P1) / 3)
+# Math GPA
+math.gpa <- testset %>% rowwise() %>%
+  mutate(math_gpa = sum(vectorial, calculus) / 2)
+
+testset$general_gpa <- gen.gpa$gen_gpa
+testset$compsci_gpa <- compsci.gpa$compsci_gpa
+testset$math_gpa <- math.gpa$math_gpa
+```
+
+
+
+## Modeling
+
+We're going to use the data from the semesters from 2009.1 up to 2014.2 for training our model.
+and we're going to use 2015.1 and 2015.2 as testing data to validate our models.
+
+Let's also use only the data from the two previous years and from the previous year, usually professors and courses change a lot during the years, so probably a given course taken 6 years ago don't model the reality as we have today.
+```{r partitioning_data}
+# Make a copy of our train data
+train.to.split <- trainset
+# Add semester column to help partition data
+train.to.split$semester <- paste(as.character(train.to.split$year),
+                                 as.character(train.to.split$term), 
+                                 sep="")
+
+# Helper function to partition data
+is_train_data <- function(semester, low, high) {
+  return(as.integer(semester) >= low & as.integer(semester) <= high)
+}
+
+#### Using only previous 6 years ######
+# Filter our data using our helper function
+validation.train <- train.to.split %>%
+  filter(is_train_data(semester, 20091, 20142)) %>% unique()
+# Remove Semester Column
+validation.train$semester <- NULL
+# Rename evaded factor to avoid problems with models
+validation.train$evaded <- as.factor(make.names(validation.train$evaded))
+
+#### Using only previous 2 years ######
+# Filter our data using our helper function
+validation.train.2yrs <- train.to.split %>%
+  filter(is_train_data(semester, 20131, 20142)) %>% unique()
+# Remove Semester Column
+validation.train.2yrs$semester <- NULL
+# Rename evaded factor to avoid problems with models
+validation.train.2yrs$evaded <- as.factor(make.names(validation.train.2yrs$evaded))
+
+#### Using only previous 1 year ######
+# Filter our data using our helper function
+validation.train.1yrs <- train.to.split %>%
+  filter(is_train_data(semester, 20141, 20142)) %>% unique()
+# Remove Semester Column
+validation.train.1yrs$semester <- NULL
+# Rename evaded factor to avoid problems with models
+validation.train.1yrs$evaded <- as.factor(make.names(validation.train.1yrs$evaded))
+
+### VALIDATION 2015.1 and 2015.2
+validation.test <- train.to.split %>%
+  filter(year == "2015")
+# Remove Semester Column
+validation.test$semester <- NULL
+# Rename evaded factor to avoid problems with models
+validation.test$evaded <- as.factor(make.names(validation.test$evaded))
+
+
+#### KAGGLE TRAIN DATASET #####
+
+#### Using only previous 2 years ######
+# Filter our data using our helper function
+train.2yrs <- train.to.split %>%
+  filter(is_train_data(semester, 20141, 20152)) %>% unique()
+# Remove Semester Column
+train.2yrs$semester <- NULL
+# Rename evaded factor to avoid problems with models
+train.2yrs$evaded <- as.factor(make.names(train.2yrs$evaded))
+```
+
+
+
+Let's define a helper function to calculate the Area Under the Roc Curve (AUROC). We're going to use this to evaluate our models, it's a better metric than Accuracy (the default), for unbalanced data.
+```{r custom_roc_function}
+test_roc <- function(model, data) {
+  roc(data$evaded,
+      predict(model, data, type = "prob")[, "TRUE."])
+}
+```
+
+
+### Logistic Regression
+
+Let's start using the best predictor from our earlier experiments, the optimized with Lasso and Ridge Regression Model. Due to the use of AUC as a metric, and a bug on the glmnet library, we're going to use our own optimization grid, which is going to try multiple values for alpha ($\alpha$) and lambda ($\lambda$). Also note we're using a better summary function that was recently introduced to the Caret library, **prSummary** It takes in consideration the area under the Recall and Precision curve as a metric, which again is a better parameter to use with unbalanced data.
+```{r linear_regression_model}
+myControl <- trainControl(method = "cv",
+                          repeats = 5,
+                          classProbs = TRUE,
+                          summaryFunction = prSummary,
+                          verboseIter=TRUE)
+
+eGrid <- expand.grid(.alpha=seq(0.1,0.9, by=0.1),.lambda=seq(0,1,by=0.01))
+
+reg_model <- train(evaded ~ term + vectorial + calculus + ICS + LP1 + RPT + P1 + missing_records + general_gpa + compsci_gpa + math_gpa,
+               data = trainset,
+               tuneGrid = eGrid, 
+               method="glmnet",
+               family = "binomial",
+               trControl = myControl,
+               na.action = na.omit,
+               metric = "AUC")
+
+reg_model %>%
+  test_roc(data = validation.test) %>%
+  auc()
+```
+
+This model got a 0.84314 on the Kaggle judge, note that since we're using probabilities to identify how likely our student evaded or not. For the Kaggle submission I used a threshold of 30%, so if we have 30% or more certainty that our student evaded we're returning true, the reason for such a low threshold is that the maximum certainty we have on our dataset is 43% and then a couple of values on the lower thirties.
+
+This model is probably not a really good model.
+
+### Gradient Boosting Machine
+
+Let's use a Gradient Boosting Machine (gbm) as it can better deal with non-linearities as the one we have in our data. Model hyperparameters are tuned using ten fold cross-validation on the validation training set, repeating five times. the AUC is used to evaluate the classifier to avoid having to make decisions about the classification threshold. Note, that this model takes some time to run.
+
+```{r gbm_control_settings}
+gbm_ctrl <- trainControl(method = "repeatedcv",
+                     number = 10,
+                     repeats = 5,
+                     summaryFunction = prSummary,
+                     classProbs = TRUE)
+```
+
+```{r predicting_reg_model, warning=FALSE}
+# Build a standard classifier using a gradient boosted machine
+orig_fit <- train(evaded ~ term + vectorial + calculus + ICS + LP1 + RPT + P1 + missing_records + general_gpa + compsci_gpa + math_gpa,
+                  data = validation.train,
+                  method = "gbm",
+                  verbose = FALSE,
+                  metric = "AUC",
+                  trControl = gbm_ctrl)
+
+orig_fit %>%
+  test_roc(data = validation.test) %>%
+  auc()
+```
+
+Overall, the final model yields an AUC of 0.9119 which is good. And a Kaggle score of 0.84314.
+
+Let's se if we can improve it using weights to penalize miss classifications in the minority class.
+
+
+### Weighted Gradient Boosting Machine
+
+Let's implement a simple technique that based on the literature yields great results dealing with unbalanced data, let's impose a heavier cost when errors are made in the minority class.
+
+```{r using_weights, warning=FALSE}
+# Create model weights (they sum to one)
+get_weights <- function(data) {
+  ifelse(data$evaded == "FALSE.",
+                        (1/table(data$evaded)[1]) * 0.5,
+                        (1/table(data$evaded)[2]) * 0.5)
+}
+
+# Use the same seed to ensure same cross-validation splits
+gbm_ctrl$seeds <- orig_fit$control$seeds
+
+# Get Weights
+model_weights <- get_weights(validation.train.2yrs)
+
+# Build weighted model
+weighted_fit <- train(evaded ~ term + vectorial + calculus + ICS + LP1 + RPT + P1 + missing_records + general_gpa + compsci_gpa + math_gpa,
+                      data = validation.train.2yrs,
+                      method = "gbm",
+                      verbose = FALSE,
+                      weights = model_weights,
+                      metric = "AUC",
+                      trControl = gbm_ctrl)
+
+weighted_fit %>%
+  test_roc(data = validation.test) %>%
+  auc()
+
+
+
+# KAGGLE
+# Get Weights
+model_weights <- get_weights(train.2yrs)
+# Build weighted model
+kaggle_weighted_fit <- train(evaded ~ term + vectorial + calculus + ICS + LP1 + RPT + P1 +
+                               missing_records + general_gpa + compsci_gpa + math_gpa,
+                      data = train.2yrs,
+                      method = "gbm",
+                      verbose = FALSE,
+                      weights = model_weights,
+                      metric = "AUC",
+                      trControl = gbm_ctrl)
+
+```
+
+This model got the best results in our validation training set an AUC of 0.9591!!
+
+We're using a threshold of 98% and 99%, and also using the whole training data, and only the data from the previous 2 years (experimental results identified this data as a better predictor).
+
+But we still only obtained a score of 0.84314 on the Kaggle judge. :(
+
+### Kaggle Predictions
+
+Let's create the Kaggle solution files using our previous models.
+
+```{r kaggle_predictions}
+# Regression
+reg_model_pred <- predict(reg_model, testset, type='prob')
+reg_model_pred <- reg_model_pred[, 2] > 0.3
+reg_model_results <- data.frame(MAT_ALU_MATRICULA = testset$student_id,
+                                EVADIU = (reg_model_pred == TRUE))
+write.csv(reg_model_results, file = 'reg_model_results_all.csv', row.names = F)
+
+
+# Weighted Gradient Boosting Machine (gbm)
+weighted_gbm_pred <- predict(weighted_fit, testset, type = "prob")
+weighted_gbm_pred <- weighted_gbm_pred[, 2] >= 0.98
+weighted_gbm_results <- data.frame(MAT_ALU_MATRICULA = testset$student_id,
+                                EVADIU = (weighted_gbm_pred == TRUE))
+write.csv(reg_model_results, file = 'weighted_gbm_results_98_all.csv', row.names = F)
+
+
+# Weighted Gradient Boosting Machine (gbm) - Only past 2yrs
+weighted_gbm_pred <- predict(kaggle_weighted_fit, testset, type = "prob")
+weighted_gbm_pred <- weighted_gbm_pred[, 2] > 0.99
+weighted_gbm_results <- data.frame(MAT_ALU_MATRICULA = testset$student_id,
+                                EVADIU = (weighted_gbm_pred == TRUE))
+write.csv(reg_model_results, file = 'weighted_gbm_results_99_2yrs_prsummary.csv', row.names = F)
+
+
+
+
+# Weighted Gradient Boosting Machine (gbm) previous 2 years
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
