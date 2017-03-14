@@ -8,7 +8,7 @@ The solution for this problem can be found [here](http://rpubs.com/caynan/ad2-hw
 In this lab we try to predict if a student after taking the first semester, if he/she will
 return to the second semester.
 ### Solution
-The solution for this problem can be found [here](http://rpubs.com/caynan/AD2-predicting-evasion)
+The solution for this problem can be found [here](http://rpubs.com/caynan/ad2_predicting_evasion)
 
 
 ## Part 3: Kaggle Competition
