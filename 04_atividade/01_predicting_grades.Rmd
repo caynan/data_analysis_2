@@ -7,24 +7,150 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+library(recommenderlab)
+library(DMwR)
+library(dplyr)
+library(reshape2)
+library(ggplot2)
+library(Matrix)
 ```
 
-## R Markdown
+# 1. Introduction
+Let's practice the use of recommendation systems.
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+We want to predict the grade a student will obtain on the 4th semester of the Computer Science course at UFCG (My university), for this let's use collaborative filtering.
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+The basic idea is to use collaborative filtering on the users for:  
+  - Find the most similar students, using the classes taken and the grades obtained to the targeted students.  
+  - Based on those neighbors predict the grade our student might obtain in the 4th semester classes. 
 
-```{r cars}
-summary(cars)
+### First things first
+
+Let's get our data that is hosted in our repo on github.
+
+```{r load_data}
+COL_NAMES <- c("student_id", "year", "term", "semester_coursed", "course_id", "course_name", "course_semester", "grade")
+
+train <- read.csv("https://raw.githubusercontent.com/caynan/data_analysis_2/master/04_atividade/data/lab4_part1_train_data.csv")
+train <- na.omit(train)
+colnames(train) <- COL_NAMES
+# Creating factors
+train$student_id <- as.factor(train$student_id)
+train$course_id <- as.factor(train$course_id)
+
+test <- read.csv("https://raw.githubusercontent.com/caynan/data_analysis_2/master/04_atividade/data/lab4_part1_test_data.csv")
+test <- na.omit(test)
+colnames(test) <- COL_NAMES
 ```
 
-## Including Plots
+# 2. Data Manipulation
 
-You can also embed plots, for example:
+Let's transform our dataset to be wide using reshape and remove some columns we're not going to be using on our collaborative recommender. We're also, converting our data into realRatingMatrix data structure which is used by the recommenderlab library.
 
-```{r pressure, echo=FALSE}
-plot(pressure)
+```{r widen_data}
+# ME, PLP, Logica, OAC, ES, SI1, LOAC
+COL_4_TERM <- c("1114114", "1411169", "1411173", "1411175", "1411177", "1411178", "1411182")
+
+widen_data <- function(df) {
+  data.reshaped.by.course <- df %>%
+    group_by(student_id, course_id) %>%
+    mutate(grade = max(grade)) %>%
+    ungroup() %>%
+    distinct(student_id, course_id, .keep_all = TRUE) %>%
+    select(student_id, course_id, grade) %>%
+    dcast(student_id ~ course_id, value.var = "grade") #, fill=0
+  
+  row.names(data.reshaped.by.course) <- data.reshaped.by.course$student_id
+  data.reshaped.by.course$student_id <- NULL
+  
+  return(data.reshaped.by.course)
+}
+
+toRatingMatrix <- function(df) {
+  temp <- as.matrix(df)
+  temp <- as(temp, "realRatingMatrix") 
+  
+  return(temp)
+}
+
+train_widen <- widen_data(train)
+train_rating_matrix <- toRatingMatrix(train_widen)
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+Let's prepare our data to be used by the `Recommender` method.
+
+```{r removing_columns}
+# Grades of 4th semester classes should be erased
+test_widen <- widen_data(test) # we're using this at the end to evaluate our model.
+test_cleaned <- test_widen
+for(i in 1:length(COL_4_TERM)) {
+  # We set all the columns we want to make predictions to NA.
+  test_cleaned[COL_4_TERM[i]] <- NA
+}
+
+# Create rating matrix
+test_rating_matrix <- toRatingMatrix(test_cleaned)
+```
+
+# 3. Recommender System
+
+Let's train our recommender system using a User Based approach (UBCF).
+
+```{r training_recommender}
+# Building model
+model <- Recommender(train_rating_matrix, method = "UBCF", 
+                     param=list(normalize = "center", method="pearson", nn=10))
+```
+
+And now let's use the model we just created to predict the grades of the students on our test set.
+
+```{r predicting_grades}
+# Making predictions 
+prediction <- predict(model, test_rating_matrix, type="ratings")
+
+# Cleanning Predicted Data and making it wide
+t <- as(prediction, "data.frame")
+colnames(t) <- c("student_id", "course_id", "grade")
+predicted_test <- widen_data(t)
+```
+
+
+Calculating the RMSE for our prediction.
+
+```{r rmse}
+# Get only 4th semester courses for predicted and real values
+predicted_test <- select(predicted_test, one_of(COL_4_TERM))
+real_test <- select(test_widen, one_of(COL_4_TERM))
+
+# Calculate RMSE
+rmse <- sqrt( mean( (predicted_test - real_test)^2 , na.rm = TRUE ) )
+rmse
+```
+
+## 3.1 Imputing Data
+
+If we stop to think about it, we're [imputing missing data][imputation wiki]. So we can adapt the `knnImputation` method from the `DMwR` package, which is used to fill NAs in a data frame using the weigthed average of their K-nearest neighbors. Which reduce our work to:
+
+```{r using_DMwR}
+DMwR_prediction <- knnImputation(test_cleaned, scale=F, k = 10, distData = train_widen)
+```
+
+The only caveat is that we're using euclidean distance here in contrast with the previous way where we used Pearson to calculate the distance between students.
+
+Let's see if we obtained a better RMSE using this method
+
+```{r rmse_DMwR}
+DMwR_prediction <- select(DMwR_prediction, one_of(COL_4_TERM))
+rmse_DMwR <- sqrt( mean( (DMwR_prediction - real_test)^2 , na.rm = TRUE ) )
+rmse_DMwR
+```
+
+We obtained slightly worse results, which I theorize is given the fact we're using Euclidean Distance, given that Pearson find the students on which their grades vary in the same way and that Euclidean distance find the students with the closest grades to one another.
+
+## Do we have any missing predictions?
+
+The percentage of missing predictions is zero for both methods, we have at least one other student that is similar to the ones we're trying to predict their grade, which given that we have 2107 students in our training set is an expected result.
+
+### That is it.
+
+[imputation wiki]: https://en.wikipedia.org/wiki/Imputation_(statistics)
